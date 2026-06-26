@@ -1,0 +1,155 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ENSP ops</title>
+<link rel="stylesheet" href="topo-viewer.css">
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-badge" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 2v4m0 12v4M2 12h4m12 0h4M5 5l2.8 2.8m8.4 8.4L19 19M5 19l2.8-2.8m8.4-8.4L19 5"></path>
+        </svg>
+      </div>
+      <div class="brand-copy">
+        <strong>ENSP ops</strong>
+      </div>
+    </div>
+    <div class="topbar-status">
+      <div class="online-row topbar-online">
+        <span class="online-dot" id="footerOnlineDot"></span>
+        <span id="footerOnlineText">MCP 在线</span>
+      </div>
+    </div>
+    <input id="fileInput" type="file" accept=".topo,.xml,.json" hidden>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <div class="sidebar-tools" aria-label="左侧操作区">
+        <button class="tool-btn" id="btnUploadSide" type="button" aria-label="导入 TOPO" data-tip="请上传TOPO">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+        </button>
+        <button class="tool-btn" id="btnResyncSide" type="button" aria-label="刷新与重新同步" data-tip="刷新当前状态">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 11a8 8 0 1 0 2 5"></path>
+            <path d="M20 4v7h-7"></path>
+          </svg>
+        </button>
+        <button class="tool-btn danger" id="btnClearTopology" type="button" aria-label="清空拓扑" data-tip="清空当前拓扑">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"></path>
+            <path d="M8 6V4h8v2"></path>
+            <path d="M19 6l-1 13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+            <path d="M10 11v6M14 11v6"></path>
+          </svg>
+        </button>
+        <button class="tool-btn" id="btnThemeToggle" type="button" aria-label="切换主题" data-tip="切换到深色主题" aria-pressed="false">
+          <span class="theme-icon theme-icon-light" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2.5M12 19.5V22M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77"></path>
+            </svg>
+          </span>
+          <span class="theme-icon theme-icon-dark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path>
+            </svg>
+          </span>
+        </button>
+      </div>
+
+      <div class="sidebar-head">
+        <div class="sidebar-title">设备列表</div>
+        <div class="sidebar-subtitle" id="topologyMeta">等待上传 TOPO</div>
+      </div>
+
+      <label class="search-wrap" for="deviceSearch">
+        <input id="deviceSearch" type="search" placeholder="筛选设备名称">
+      </label>
+
+      <div class="device-list" id="deviceList"></div>
+
+      <div class="sidebar-footer">
+        <label class="switch-row" for="autoFollow">
+          <span>自动跟随</span>
+          <input id="autoFollow" type="checkbox" checked>
+        </label>
+      </div>
+    </aside>
+
+    <section class="main-panel">
+      <div class="content-frame" id="contentFrame">
+        <section class="terminal-shell">
+          <div class="terminal-top">
+            <div class="terminal-heading-inline">
+              <div class="terminal-title">终端输出</div>
+              <div class="terminal-subtitle" id="terminalSubtitle">等待 MCP 命令或上传 TOPO</div>
+            </div>
+            <div class="terminal-meta">
+              <div class="font-controls font-controls-compact" aria-label="字体调节">
+                <span class="font-controls-label">字号</span>
+                <label class="font-slider" for="fontSizeControl">
+                  <input id="fontSizeControl" type="range" min="11" max="18" step="1" value="12">
+                  <span id="fontSizeValue">12px</span>
+                </label>
+                <button class="mini-btn" id="fontSizeReset" type="button">重置</button>
+              </div>
+              <span class="meta-chip">当前设备 <strong id="selectedDeviceLabel">全部</strong></span>
+              <span class="meta-chip">同步结果 <strong id="syncSummary">未同步</strong></span>
+            </div>
+          </div>
+
+          <div class="terminal-screen" id="terminalScreen">
+            <div class="terminal-empty" id="terminalEmpty">
+              <h1>先上传 `.topo`，再观察设备命令回显</h1>
+              <p>左侧工具区负责导入拓扑、刷新状态和清空当前拓扑。上传后页面会自动读取拓扑中的设备名与 eNSP 本地端口，并把设备同步进 MCP 注册表。</p>
+              <div class="empty-hint">从左侧开始操作，这里会自动显示连接、命令发送和终端回显。</div>
+            </div>
+            <div class="terminal-lines" id="terminalLines" hidden></div>
+          </div>
+        </section>
+
+        <div class="panel-divider" id="panelDivider" role="separator" aria-label="拖动调整日志区高度" aria-orientation="horizontal" tabindex="0">
+          <span class="panel-divider-handle" aria-hidden="true"></span>
+          <span class="panel-divider-label">拖动调整日志区</span>
+        </div>
+
+        <section class="logs-shell">
+          <div class="logs-head">
+            <div class="logs-heading-inline">
+              <div class="logs-title">MCP 事务日志</div>
+              <div class="logs-subtitle" id="logsSubtitle">显示 MCP 工具摘要与异常信息</div>
+            </div>
+          </div>
+          <div class="logs-list" id="logsList"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div class="confirm-backdrop" id="confirmBackdrop" hidden></div>
+  <div class="confirm-dialog" id="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage" hidden>
+    <div class="confirm-dialog-card">
+      <div class="confirm-dialog-title" id="confirmTitle">确认清空当前拓扑</div>
+      <div class="confirm-dialog-message" id="confirmMessage">这会删除已保存的 topology.json，并移除本次拓扑同步到注册表的设备。</div>
+      <div class="confirm-dialog-actions">
+        <button class="mini-btn" id="confirmCancel" type="button">取消</button>
+        <button class="mini-btn danger" id="confirmAccept" type="button">确认</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</div>
+<script src="topo-viewer.js"></script>
+</body>
+</html>
