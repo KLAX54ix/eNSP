@@ -6,13 +6,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import GetPromptResult, Prompt, Resource, TextContent, Tool
-from pydantic import AnyUrl
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.prompts import Message, Prompt as FastMCPPrompt, PromptResult
+from fastmcp.resources import Resource as FastMCPResource
+from fastmcp.tools import Tool as FastMCPTool, ToolResult
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+from mcp.types import Resource, TextContent, Tool
+from pydantic import PrivateAttr
 
 from .config import auto_discover_devices, config, list_devices, register_device, sync_topology_devices_from_file, unregister_device
+from .exceptions import ENSPError, ToolFailure
 from .runtime import finish_request, publish, request_scope
 from .prompts import get_prompt, list_prompts
 from .topology_context import format_topology_context, load_current_topology, summarize_topology, topology_json_resource
@@ -40,18 +47,21 @@ SERVER_INSTRUCTIONS = (
     "ensp_senior_network_engineer for senior network engineering role guidance."
 )
 
-server = Server(config.server_name, instructions=SERVER_INSTRUCTIONS)
-
+SINGLE_LINE_STRING = {
+    "type": "string", "minLength": 1, "pattern": r"\S",
+    "not": {"pattern": r"[\r\n\u0000]"},
+}
+COMMAND_LIST = {"type": "array", "minItems": 1, "items": SINGLE_LINE_STRING}
 
 TOOLS = [
     Tool(
         name="register_device",
         description="Register an eNSP device by name and TCP port.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Device name, e.g. R1"},
-                "port": {"type": "integer", "description": "Local TCP port, e.g. 2000"},
+                "name": {**SINGLE_LINE_STRING, "description": "Device name, e.g. R1"},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535, "description": "Local TCP port, e.g. 2000"},
                 "username": {"type": "string", "description": "Optional username"},
                 "password": {"type": "string", "description": "Optional password"},
             },
@@ -61,7 +71,7 @@ TOOLS = [
     Tool(
         name="unregister_device",
         description="Remove a registered eNSP device.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"name": {"type": "string", "description": "Device name"}},
             "required": ["name"],
@@ -70,21 +80,21 @@ TOOLS = [
     Tool(
         name="list_devices",
         description="List registered eNSP devices.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
     Tool(
         name="auto_discover",
         description="Auto-discover eNSP devices by scanning local ports.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
     Tool(
         name="execute_cli",
         description="Execute a single display/query command on a device.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Device name or IP"},
-                "command": {"type": "string", "description": "CLI command"},
+                "command": {**SINGLE_LINE_STRING, "description": "CLI command"},
             },
             "required": ["device_ip", "command"],
         },
@@ -92,27 +102,24 @@ TOOLS = [
     Tool(
         name="mcp_execute",
         description="Execute a single command on a topology-synced eNSP device by its name via local MCP console port.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Topology device name or IP"},
-                "command": {"type": "string", "description": "CLI command"},
+                "command": {**SINGLE_LINE_STRING, "description": "CLI command"},
             },
             "required": ["device_ip", "command"],
         },
     ),
     Tool(
         name="push_config",
-        description="Push a list of configuration commands to a device.",
-        inputSchema={
+        description="Push configuration commands sequentially; stop on the first failure and report unexecuted commands. Applied commands are not rolled back.",
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Device name or IP"},
                 "commands": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                    "maxItems": 200,
+                    **COMMAND_LIST,
                     "description": "Configuration commands",
                 },
             },
@@ -121,16 +128,13 @@ TOOLS = [
     ),
     Tool(
         name="mcp_push_config",
-        description="Push configuration commands to a topology-synced eNSP device via local MCP console port.",
-        inputSchema={
+        description="Push commands to a topology-synced device; stop on the first failure. Applied commands are not rolled back.",
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Topology device name or IP"},
                 "commands": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                    "maxItems": 200,
+                    **COMMAND_LIST,
                     "description": "Configuration commands",
                 },
             },
@@ -139,17 +143,18 @@ TOOLS = [
     ),
     Tool(
         name="multi_device_push_config",
-        description="Push configuration to multiple devices.",
-        inputSchema={
+        description="Validate all batches, then push configuration sequentially. Stop remaining commands and devices on the first failure; no automatic rollback.",
+        input_schema={
             "type": "object",
             "properties": {
                 "devices": {
                     "type": "array",
+                    "minItems": 1,
                     "items": {
                         "type": "object",
                         "properties": {
-                            "device_ip": {"type": "string"},
-                            "commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200},
+                            "device_ip": SINGLE_LINE_STRING,
+                            "commands": COMMAND_LIST,
                         },
                         "required": ["device_ip", "commands"],
                     },
@@ -161,8 +166,8 @@ TOOLS = [
     ),
     Tool(
         name="save_config",
-        description="Save the current device configuration.",
-        inputSchema={
+        description="Save configuration, answering Y/N and accepting a default filename. Success requires a save completion message and final console prompt.",
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Device name or IP"},
@@ -173,7 +178,7 @@ TOOLS = [
     Tool(
         name="get_running_config",
         description="Read the running configuration of a device.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Device name or IP"},
@@ -185,12 +190,12 @@ TOOLS = [
     Tool(
         name="ping_from_device",
         description="Run ping from a device.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Device name or IP"},
                 "target_ip": {"type": "string", "description": "Ping target IP"},
-                "count": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20, "description": "Ping count"},
+                "count": {"type": "integer", "default": 5, "description": "Ping count"},
                 "source_ip": {"type": "string", "description": "Optional source IP"},
             },
             "required": ["device_ip", "target_ip"],
@@ -199,7 +204,7 @@ TOOLS = [
     Tool(
         name="traceroute_from_device",
         description="Run traceroute from a device.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Device name or IP"},
@@ -212,7 +217,7 @@ TOOLS = [
     Tool(
         name="health_check",
         description="Run a quick health check on one device.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Device name or IP"},
@@ -223,7 +228,7 @@ TOOLS = [
     Tool(
         name="mcp_health_check",
         description="Check connectivity for a topology-synced eNSP device via local MCP console port.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_ip": {"type": "string", "description": "Topology device name or IP"},
@@ -234,7 +239,7 @@ TOOLS = [
     Tool(
         name="multi_health_check",
         description="Run health checks for multiple devices.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "device_names": {
@@ -248,7 +253,7 @@ TOOLS = [
     Tool(
         name="discover_topology",
         description="Parse an eNSP .topo file, or summarize the current uploaded topology.json from the web UI when given that JSON path.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "Full path to a .topo file, or to the uploaded topology.json snapshot"},
@@ -259,7 +264,7 @@ TOOLS = [
     Tool(
         name="find_topo_files",
         description="Check whether the web UI already uploaded topology.json, and only then search for extra local .topo files if needed.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "search_dir": {"type": "string", "description": "Optional search directory"},
@@ -269,7 +274,7 @@ TOOLS = [
     Tool(
         name="sync_topology_devices",
         description="Register devices from topology.json into the MCP device registry using their eNSP local console ports.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "Optional topology.json path"},
@@ -281,9 +286,16 @@ TOOLS = [
     Tool(
         name="get_topology_context",
         description="Preferred first step for topology-aware tasks. Read the latest topology uploaded from the web UI so the AI can understand current devices, links, and local ports.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
 ]
+
+for tool_spec in TOOLS:
+    # Apply the same device-name boundary to every console tool and alias.
+    for field in ("device_ip", "name"):
+        field_schema = tool_spec.input_schema.get("properties", {}).get(field)
+        if field_schema is not None:
+            field_schema.update(SINGLE_LINE_STRING)
 
 PROMPTS = list_prompts()
 
@@ -330,63 +342,22 @@ TOOL_DISPATCH = {
 }
 
 
-@server.list_tools()
-async def handle_list_tools() -> list[Tool]:
-    return TOOLS
-
-
-@server.list_resources()
-async def handle_list_resources() -> list[Resource]:
+def _topology_description() -> str:
     current_topology = load_current_topology()
     summary = summarize_topology(current_topology)
-    description = (
+    return (
         f"Latest uploaded topology from the web UI with {summary['device_count']} devices and {summary['link_count']} links."
         if current_topology
         else "Latest uploaded topology from the web UI. No topology uploaded yet."
     )
 
-    return [
-        Resource(
-            name="current_topology",
-            uri="ensp://topology/current",
-            description=description,
-            mimeType="application/json",
-        ),
-        Resource(
-            name="registered_devices",
-            uri="ensp://devices/registered",
-            description="Current MCP device registry derived from manual registration, auto-discovery, or topology sync.",
-            mimeType="text/plain",
-        ),
-    ]
 
-
-@server.list_prompts()
-async def handle_list_prompts() -> list[Prompt]:
-    return PROMPTS
-
-
-@server.get_prompt()
-async def handle_get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
-    return get_prompt(name)
-
-
-@server.read_resource()
-async def handle_read_resource(uri: AnyUrl) -> str:
-    uri_text = str(uri)
-    if uri_text == "ensp://topology/current":
-        return topology_json_resource(load_current_topology())
-    if uri_text == "ensp://devices/registered":
-        return list_devices()
-    return f"Unknown resource: {uri_text}"
-
-
-@server.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(name: str, arguments: dict[str, Any]) -> ToolResult:
     handler = TOOL_DISPATCH.get(name)
     if handler is None:
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        raise ToolError(f"Unknown tool: {name}")
 
+    is_error = False
     with request_scope(name, arguments) as request_id:
         publish(
             "tool_start",
@@ -397,7 +368,10 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         )
         try:
             result = await asyncio.to_thread(handler, arguments)
+            if isinstance(result, ToolFailure):
+                raise ENSPError(str(result))
         except Exception as exc:  # pragma: no cover - surfaced as text to client
+            is_error = True
             logger.error("Tool %s failed: %s", name, exc, exc_info=True)
             result = f"Tool {name} failed: {exc}"
             publish(
@@ -419,17 +393,100 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
             finish_request(request_id, "done", result=result_text)
 
-    return [TextContent(type="text", text=result)]
+    return ToolResult(
+        content=[TextContent(type="text", text=result if isinstance(result, str) else str(result))],
+        is_error=is_error,
+    )
+
+
+class EnspTool(FastMCPTool):
+    """Keep the published JSON schemas while using FastMCP's tool lifecycle."""
+
+    _input_validator: Draft202012Validator = PrivateAttr()
+
+    def model_post_init(self, context: Any) -> None:
+        super().model_post_init(context)
+        Draft202012Validator.check_schema(self.parameters)
+        self._input_validator = Draft202012Validator(self.parameters)
+
+    async def run(self, arguments: dict[str, Any]) -> ToolResult:
+        # Custom Tool subclasses do not get FunctionTool's Pydantic validation.
+        # Validate before dispatch so malformed requests cannot reach devices.
+        try:
+            self._input_validator.validate(arguments)
+        except ValidationError as exc:
+            path = ".".join(str(part) for part in exc.absolute_path) or "arguments"
+            raise ToolError(f"Invalid {path}: {exc.message}") from exc
+        return await handle_call_tool(self.name, arguments)
+
+
+class CurrentTopologyResource(FastMCPResource):
+    """Read the uploaded snapshot on every request, including its description."""
+
+    def to_mcp_resource(self, **overrides: Any) -> Resource:
+        overrides.setdefault("description", _topology_description())
+        return super().to_mcp_resource(**overrides)
+
+    async def read(self) -> str:
+        return await asyncio.to_thread(lambda: topology_json_resource(load_current_topology()))
+
+
+class EnspPrompt(FastMCPPrompt):
+    """Preserve both prompt messages and attach the current topology at render time."""
+
+    async def render(self, arguments: dict[str, Any] | None = None) -> PromptResult:
+        result = await asyncio.to_thread(get_prompt, self.name)
+        return PromptResult(
+            messages=[Message(message.content, role=message.role) for message in result.messages],
+            description=result.description,
+        )
+
+
+server = FastMCP(
+    config.server_name,
+    instructions=SERVER_INSTRUCTIONS,
+    version="0.2.0",
+    on_duplicate="error",
+)
+
+for tool_spec in TOOLS:
+    server.add_tool(
+        EnspTool(
+            name=tool_spec.name,
+            description=tool_spec.description,
+            parameters=tool_spec.input_schema,
+        )
+    )
+
+server.add_resource(
+    CurrentTopologyResource(
+        name="current_topology",
+        uri="ensp://topology/current",
+        description="Latest uploaded topology from the web UI.",
+        mime_type="application/json",
+    )
+)
+
+
+@server.resource(
+    "ensp://devices/registered",
+    name="registered_devices",
+    description="Current MCP device registry derived from manual registration, auto-discovery, or topology sync.",
+    mime_type="text/plain",
+)
+def registered_devices_resource() -> str:
+    return list_devices()
+
+
+for prompt_spec in PROMPTS:
+    server.add_prompt(
+        EnspPrompt(name=prompt_spec.name, title=prompt_spec.title, description=prompt_spec.description)
+    )
 
 
 async def run() -> None:
     start_ui_server()
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    await server.run_async(transport="stdio", show_banner=False)
 
 
 def main() -> None:

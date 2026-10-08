@@ -7,12 +7,48 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from ..exceptions import ToolFailure
 from ..topology_context import load_current_topology, summarize_topology
 
 logger = logging.getLogger("ensp_mcp.topology")
+
+_XML_DECL_RE = re.compile(r'\A<\?xml\s+[^?]*\?>')
+_XML_DECL_ENCODING_RE = re.compile(r'\s+encoding\s*=\s*(["\'])(?P<encoding>[^"\']+)\1', re.IGNORECASE)
+
+
+def _parse_topo_xml(file_path: str) -> ET.Element:
+    """Parse an eNSP .topo file, tolerating its legacy encoding declaration.
+
+    eNSP writes ``<?xml version="1.0" encoding="UNICODE" ?>``. Python's XML
+    parser cannot resolve "UNICODE" and raises ``LookupError: unknown encoding:
+    UNICODE``. Detect byte order before decoding; only edit the XML declaration,
+    preserving attributes and text in the document body.
+    """
+    raw = Path(file_path).read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    elif raw[:3] == b"\xef\xbb\xbf":
+        text = raw.decode("utf-8-sig")
+    elif len(raw) >= 4 and raw[0] == 0 and raw[2] == 0 and raw[1] in b"< \t\r\n":
+        text = raw.decode("utf-16-be")
+    elif len(raw) >= 4 and raw[1] == 0 and raw[3] == 0 and raw[0] in b"< \t\r\n":
+        text = raw.decode("utf-16-le")
+    else:
+        # For ASCII-compatible encodings, consult only the declaration. The
+        # legacy UNICODE label is not a codec; eNSP commonly uses UTF-8 here.
+        header = _XML_DECL_RE.match((raw.partition(b"?>")[0] + b"?>").decode("ascii", errors="replace"))
+        declared = _XML_DECL_ENCODING_RE.search(header.group()) if header else None
+        encoding = declared.group("encoding") if declared else "utf-8"
+        text = raw.decode("utf-8" if encoding.upper() == "UNICODE" else encoding)
+    declaration = _XML_DECL_RE.match(text)
+    if declaration:
+        header = _XML_DECL_ENCODING_RE.sub("", declaration.group(), count=1)
+        text = header + text[declaration.end():]
+    return ET.fromstring(text)
 
 
 def discover_topology(file_path: str) -> str:
@@ -26,7 +62,7 @@ def discover_topology(file_path: str) -> str:
         拓扑描述（设备列表、接口、链路关系）
     """
     if not os.path.exists(file_path):
-        return f"文件不存在: {file_path}"
+        return ToolFailure(f"文件不存在: {file_path}")
 
     suffix = Path(file_path).suffix.lower()
     if suffix == ".json":
@@ -34,36 +70,42 @@ def discover_topology(file_path: str) -> str:
             with open(file_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except Exception as exc:
-            return f"无法读取 topology.json: {exc}"
+            return ToolFailure(f"无法读取 topology.json: {exc}")
 
         if not isinstance(payload, dict):
-            return f"不是有效的 topology.json 文件: {file_path}"
+            return ToolFailure(f"不是有效的 topology.json 文件: {file_path}")
         return _describe_topology_payload(payload, file_path, "网页上传的 topology 快照")
 
     if suffix != ".topo":
-        return f"不是 .topo 或 topology.json 文件: {file_path}"
+        return ToolFailure(f"不是 .topo 或 topology.json 文件: {file_path}")
 
     try:
-        tree = ET.parse(file_path)
-        root = tree.getroot()
+        root = _parse_topo_xml(file_path)
     except ET.ParseError as e:
-        return f"XML 解析失败: {e}"
+        return ToolFailure(f"XML 解析失败: {e}")
+    except (LookupError, UnicodeError, OSError) as e:
+        return ToolFailure(f"无法读取 .topo 文件: {e}")
 
     devices = []
     links = []
+    id_to_name: dict[str, str] = {}
 
-    # 灵活查找设备节点（兼容不同 eNSP 版本）
-    device_nodes = _find_elements(root, ["devices/device", "device", "node", "nodes/node"])
+    # 灵活查找设备节点（兼容不同 eNSP 版本：真实 .topo 用 devices/dev）
+    device_nodes = _find_elements(root, ["devices/dev", "devices/device", "device", "node", "nodes/node"])
     for dev in device_nodes:
         info = _extract_device_info(dev)
         if info:
             devices.append(info)
+            if info.get("id"):
+                id_to_name[info["id"]] = info["name"]
 
-    # 灵活查找链路节点
-    link_nodes = _find_elements(root, ["links/link", "link", "connection", "connections/connection"])
+    # 灵活查找链路节点（真实 .topo 用 lines/line）
+    link_nodes = _find_elements(root, ["lines/line", "links/link", "link", "connection", "connections/connection"])
     for link in link_nodes:
         info = _extract_link_info(link)
         if info:
+            info["src_device"] = id_to_name.get(info["src_device"], info["src_device"])
+            info["dst_device"] = id_to_name.get(info["dst_device"], info["dst_device"])
             links.append(info)
 
     return _describe_parsed_topology(file_path, devices, links)
@@ -100,14 +142,14 @@ def find_topo_files(search_dir: str = "") -> str:
     for d in search_dirs:
         if not os.path.isdir(d):
             continue
-        for dirpath, _, filenames in os.walk(d):
+        for dirpath, directories, filenames in os.walk(d):
             for f in filenames:
                 if f.lower().endswith(".topo"):
                     found.append(os.path.join(dirpath, f))
             # 限制递归深度为 3 层
-            depth = dirpath[len(d):].count(os.sep)
+            depth = len(Path(os.path.relpath(dirpath, d)).parts)
             if depth >= 3:
-                break
+                directories[:] = []
 
     lines: list[str] = []
     if uploaded_summary:
@@ -172,16 +214,17 @@ def _describe_parsed_topology(file_path: str, devices: list[dict], links: list[d
 
     if devices:
         lines.append("\n=== 设备列表 ===")
-        lines.append(f"{'名称':<15} {'类型':<12} {'型号':<20}")
-        lines.append("-" * 47)
+        lines.append(f"{'名称':<15} {'类型':<12} {'型号':<20} {'控制端口':<8}")
+        lines.append("-" * 58)
         for d in devices:
-            lines.append(f"{d['name']:<15} {d['type']:<12} {d['model']:<20}")
+            lines.append(f"{d['name']:<15} {d['type']:<12} {d['model']:<20} {d.get('com_port', ''):<8}")
             if d.get("interfaces"):
                 for iface in d["interfaces"]:
                     lines.append(f"  └─ {iface}")
 
     if links:
         lines.append("\n=== 链路连接 ===")
+        lines.append("  数字端口为 .topo 接口索引；CLI 接口名请通过设备接口查询确认。")
         for l in links:
             lines.append(f"  {l['src_device']}:{l['src_port']} ←→ {l['dst_device']}:{l['dst_port']}")
 
@@ -215,7 +258,7 @@ def _extract_device_info(elem: ET.Element) -> dict | None:
         or elem.findtext("type")
         or elem.get("deviceType")
         or elem.findtext("deviceType")
-        or "unknown"
+        or ""
     )
 
     model = (
@@ -225,6 +268,10 @@ def _extract_device_info(elem: ET.Element) -> dict | None:
         or elem.findtext("deviceModel")
         or ""
     )
+
+    # 真实 .topo 无 type 字段，用型号推断设备类别以保持输出可读
+    if not dev_type:
+        dev_type = _infer_device_type(model)
 
     # 提取接口列表
     interfaces = []
@@ -236,36 +283,76 @@ def _extract_device_info(elem: ET.Element) -> dict | None:
         if interfaces:
             break
 
+    # eNSP stores interface groups under slots: e.g. GE count=2 and Ethernet
+    # count=8. Preserve that inventory without guessing model-specific CLI
+    # numbering (slot17 is an internal topology slot identifier).
+    for slot in elem.findall("slot") + elem.findall("slots/slot"):
+        slot_name = slot.get("number") or slot.get("name") or "未命名插槽"
+        for iface in slot.findall("interface"):
+            iname = (iface.get("interfacename") or iface.get("name")
+                     or iface.findtext("name") or iface.get("sztype") or "未知接口类型")
+            count = iface.get("count")
+            description = f"{slot_name} / {iname}"
+            if count is not None:
+                description += f" (数量: {count})"
+            interfaces.append(description)
+
     return {
+        "id": elem.get("id") or elem.findtext("id") or "",
         "name": name,
         "type": dev_type,
         "model": model,
+        "com_port": elem.get("com_port") or elem.findtext("com_port") or "",
         "interfaces": interfaces,
     }
 
 
+def _infer_device_type(model: str) -> str:
+    """从 eNSP 型号推断设备类别（.topo 不含 type 字段）。"""
+    lowered = str(model or "").strip().lower()
+    if not lowered:
+        return "unknown"
+    if lowered in {"pc", "client", "server"}:
+        return lowered
+    if lowered.startswith(("ar", "router")):
+        return "router"
+    if lowered.startswith(("s", "lsw", "switch")) or lowered in {"s5700", "s3700"} or lowered.startswith("ce"):
+        return "switch"
+    if lowered.startswith("usg") or lowered.startswith("fw"):
+        return "firewall"
+    if lowered.startswith("ap"):
+        return "ap"
+    return "unknown"
+
+
 def _extract_link_info(elem: ET.Element) -> dict | None:
-    """从 XML 元素提取链路信息"""
+    """从 XML 元素提取链路信息（真实 eNSP .topo 用 srcDeviceID/destDeviceID）"""
     # 尝试多种属性/子元素格式
     src_device = (
-        elem.get("srcDevice") or elem.get("src_device")
+        elem.get("srcDeviceID") or elem.get("srcDevice") or elem.get("src_device")
         or elem.findtext("srcDevice") or elem.findtext("source/device")
         or ""
     )
-    src_port = (
-        elem.get("srcPort") or elem.get("src_port")
-        or elem.findtext("srcPort") or elem.findtext("source/port")
-        or ""
-    )
     dst_device = (
-        elem.get("dstDevice") or elem.get("dst_device")
+        elem.get("destDeviceID") or elem.get("dstDevice") or elem.get("dst_device")
         or elem.findtext("dstDevice") or elem.findtext("destination/device")
         or ""
     )
-    dst_port = (
+
+    # 真实 .topo 端口信息在 interfacePair 子节点里
+    src_port = ""
+    dst_port = ""
+    pair = elem.find("interfacePair")
+    if pair is not None:
+        src_port = pair.get("srcIndex", "")
+        dst_port = pair.get("tarIndex", pair.get("destIndex", ""))
+    src_port = src_port or (
+        elem.get("srcPort") or elem.get("src_port")
+        or elem.findtext("srcPort") or elem.findtext("source/port") or ""
+    )
+    dst_port = dst_port or (
         elem.get("dstPort") or elem.get("dst_port")
-        or elem.findtext("dstPort") or elem.findtext("destination/port")
-        or ""
+        or elem.findtext("dstPort") or elem.findtext("destination/port") or ""
     )
 
     if not (src_device and dst_device):

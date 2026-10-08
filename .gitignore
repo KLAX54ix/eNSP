@@ -5,9 +5,22 @@ __pycache__/
 config_snapshots/
 devices.json
 topology.json
+topology_registry.json
 *.egg-info/
 dist/
 build/
 .vscode/
 .idea/
+
+# This local checkout is also the uv virtual environment root.
+Lib/
+Scripts/
+Include/
+pyvenv.cfg
+/.lock
+/CACHEDIR.TAG
+.venv/
+.local/
+topo-test/
+README-old.md
 sync-source-to-ai.ps1

@@ -18,7 +18,6 @@ const state = {
   fontSize: 12,
   logsHeight: 176,
   resizeSession: null,
-  confirmClearOpen: false,
 };
 
 const THEME_STORAGE_KEY = "ensp-ops-theme";
@@ -115,27 +114,6 @@ function persistFontSize() {
   } catch {
     // Ignore storage failures in embedded webviews.
   }
-}
-
-function setClearDialogOpen(open) {
-  state.confirmClearOpen = Boolean(open);
-  $("confirmBackdrop").hidden = !state.confirmClearOpen;
-  $("confirmDialog").hidden = !state.confirmClearOpen;
-  $("confirmAccept").disabled = false;
-  $("confirmCancel").disabled = false;
-  if (state.confirmClearOpen) {
-    $("confirmAccept").focus();
-  } else {
-    $("btnClearTopology").focus();
-  }
-}
-
-function openClearDialog() {
-  setClearDialogOpen(true);
-}
-
-function closeClearDialog() {
-  setClearDialogOpen(false);
 }
 
 function maxLogsHeight() {
@@ -612,12 +590,10 @@ function readFileAsText(file) {
 function parseTopo(xmlText) {
   if (xmlText.trim().startsWith("{")) {
     const json = JSON.parse(xmlText);
-    const topology = {
+    return {
       devices: Array.isArray(json.devices) ? json.devices : [],
       links: Array.isArray(json.links) ? json.links : [],
     };
-    if (!topology.devices.length) throw new Error("拓扑文件中未解析到设备，请确认文件内容");
-    return topology;
   }
 
   const doc = new DOMParser().parseFromString(xmlText, "text/xml");
@@ -626,51 +602,24 @@ function parseTopo(xmlText) {
 
   const devices = [];
   const links = [];
-  const seenDevices = new Set();
-
-  const getAttrOrText = (node, names) => {
-    for (const name of names) {
-      const attr = node.getAttribute?.(name);
-      if (attr) return attr;
-      const child = node.querySelector?.(`:scope > ${name}`);
-      if (child?.textContent?.trim()) return child.textContent.trim();
-    }
-    return "";
-  };
-
-  const addDevice = (node) => {
-    const id = getAttrOrText(node, ["id", "deviceID", "deviceId", "uuid"]);
-    const name = getAttrOrText(node, ["name", "sysname", "label"]) || id;
-    if (!name || seenDevices.has(name)) return;
-    seenDevices.add(name);
-    devices.push({
-      id,
-      name,
-      model: getAttrOrText(node, ["model", "deviceModel", "type"]) || "unknown",
-      comPort: getAttrOrText(node, ["com_port", "comPort", "port", "consolePort"]),
-      x: Number.parseFloat(getAttrOrText(node, ["cx", "x"]) || "0") || 0,
-      y: Number.parseFloat(getAttrOrText(node, ["cy", "y"]) || "0") || 0,
-    });
-  };
-
-  const addLink = (node) => {
-    const srcId = getAttrOrText(node, ["srcDeviceID", "srcDeviceId", "srcId", "srcDevice", "source"]);
-    const dstId = getAttrOrText(node, ["destDeviceID", "dstDeviceID", "dstDeviceId", "dstId", "dstDevice", "destination"]);
-    if (!srcId || !dstId) return;
-    links.push({ srcId, dstId });
-  };
 
   doc.querySelectorAll("devices > dev").forEach((node) => {
-    addDevice(node);
+    devices.push({
+      id: node.getAttribute("id") || "",
+      name: node.getAttribute("name") || "",
+      model: node.getAttribute("model") || "",
+      comPort: node.getAttribute("com_port") || "",
+      x: Number.parseFloat(node.getAttribute("cx") || "0") || 0,
+      y: Number.parseFloat(node.getAttribute("cy") || "0") || 0,
+    });
   });
-  if (!devices.length) doc.querySelectorAll("devices > device, device, nodes > node, node").forEach(addDevice);
 
   doc.querySelectorAll("lines > line").forEach((node) => {
-    addLink(node);
+    links.push({
+      srcId: node.getAttribute("srcDeviceID") || "",
+      dstId: node.getAttribute("destDeviceID") || "",
+    });
   });
-  if (!links.length) doc.querySelectorAll("links > link, link, connections > connection, connection").forEach(addLink);
-
-  if (!devices.length) throw new Error("拓扑文件中未解析到设备，请确认文件格式是否受支持");
 
   return { devices, links };
 }
@@ -726,6 +675,9 @@ async function resyncTopology() {
 }
 
 async function clearTopology() {
+  const confirmed = window.confirm("确定要清空当前拓扑吗？这会删除已保存的 topology.json，并移除本次拓扑同步到注册表的设备。");
+  if (!confirmed) return;
+
   const response = await fetch("/api/topology/clear", { method: "POST" });
   const json = await response.json();
   if (!response.ok || !json.ok) {
@@ -749,19 +701,6 @@ async function clearTopology() {
   showToast("当前拓扑已清空");
 }
 
-async function confirmClearTopology() {
-  $("confirmAccept").disabled = true;
-  $("confirmCancel").disabled = true;
-  try {
-    await clearTopology();
-    closeClearDialog();
-  } catch (error) {
-    $("confirmAccept").disabled = false;
-    $("confirmCancel").disabled = false;
-    throw error;
-  }
-}
-
 function bindEvents() {
   $("fileInput").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
@@ -778,17 +717,7 @@ function bindEvents() {
 
   $("btnUploadSide").addEventListener("click", () => $("fileInput").click());
   $("btnResyncSide").addEventListener("click", () => resyncTopology().catch((error) => showToast(error.message)));
-  $("btnClearTopology").addEventListener("click", openClearDialog);
-  $("confirmCancel").addEventListener("click", closeClearDialog);
-  $("confirmBackdrop").addEventListener("click", closeClearDialog);
-  $("confirmAccept").addEventListener("click", () => confirmClearTopology().catch((error) => showToast(error.message)));
-  document.addEventListener("keydown", (event) => {
-    if (!state.confirmClearOpen) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeClearDialog();
-    }
-  });
+  $("btnClearTopology").addEventListener("click", () => clearTopology().catch((error) => showToast(error.message)));
 
   $("deviceSearch").addEventListener("input", (event) => {
     state.deviceSearch = event.target.value || "";

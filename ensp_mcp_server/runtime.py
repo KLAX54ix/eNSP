@@ -13,7 +13,7 @@ from queue import Empty, Queue
 from typing import Any, Iterator
 from uuid import uuid4
 
-from .config import _get_device_port, registry_snapshot
+from .config import _device_registry, _get_device_port
 
 
 def _utc_now() -> str:
@@ -72,7 +72,7 @@ def _resolve_device_label(host: str | None, port: int | None) -> str | None:
         return None
 
     if host in {"127.0.0.1", "localhost"} and port is not None:
-        for name, entry in registry_snapshot().items():
+        for name, entry in _device_registry.items():
             if _get_device_port(entry) == port:
                 return name
         return f"{host}:{port}"

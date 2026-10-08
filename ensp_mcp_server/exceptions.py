@@ -8,6 +8,33 @@ class ENSPError(Exception):
     pass
 
 
+class ToolFailure(str):
+    """Text compatible failure result, retaining error status through batching."""
+
+
+class ConfigBatchError(ENSPError):
+    """A stopped configuration batch, including its partial progress."""
+
+    def __init__(self, completed, failed, skipped, detail, output, cleanup_error=None):
+        self.completed = list(completed)
+        self.failed = failed
+        self.skipped = list(skipped)
+        self.output = output
+        self.cleanup_error = cleanup_error
+        message = (
+            f"配置批次已停止: {detail}\n"
+            f"已确认命令: {self.completed!r}\n"
+            f"失败或结果未确认: {failed!r}\n"
+            f"未执行命令: {self.skipped!r}\n"
+            "已执行命令不会自动回滚。"
+        )
+        if cleanup_error:
+            message += f"\n退出配置视图失败: {cleanup_error}"
+        if output:
+            message += f"\n设备回显:\n{output}"
+        super().__init__(message)
+
+
 class DeviceNotFoundError(ENSPError):
     """设备未在注册表中找到"""
     def __init__(self, device: str):

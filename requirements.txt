@@ -1,3 +1,5 @@
-# eNSP MCP Server Dependencies
-mcp>=1.0.0
-pydantic>=2.0.0
+# Direct runtime dependencies; uv.lock pins the complete dependency graph.
+fastmcp==4.0.11
+mcp==2.3.0
+pydantic==2.13.5
+jsonschema>=4.26.0,<5

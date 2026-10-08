@@ -12,9 +12,10 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from .config import collect_cleanup_device_names, registry_snapshot, remove_topology_devices, sync_topology_devices
+from .config import _device_registry, clear_registered_devices, collect_cleanup_device_names, remove_topology_devices, sync_topology_devices
 from .console import disconnect_active_devices
 from .runtime import publish, snapshot, subscribe
+from .validation import validate_topology_payload
 
 logger = logging.getLogger("ensp_mcp.web_ui")
 
@@ -27,26 +28,9 @@ _server: http.server.ThreadingHTTPServer | None = None
 _server_thread: threading.Thread | None = None
 
 
-def _load_topology_file() -> dict[str, object] | None:
-    if not TOPO_JSON.exists():
-        return None
-    with TOPO_JSON.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, dict):
-        raise ValueError("topology.json must contain a JSON object")
-    return payload
-
-
-def _save_topology_file(data: dict[str, object]) -> None:
-    temp_file = TOPO_JSON.with_suffix(TOPO_JSON.suffix + ".tmp")
-    with temp_file.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-    temp_file.replace(TOPO_JSON)
-
-
 def _normalize_devices() -> list[dict[str, object]]:
     devices: list[dict[str, object]] = []
-    for name, entry in registry_snapshot().items():
+    for name, entry in _device_registry.items():
         if isinstance(entry, dict):
             port = int(entry.get("port", 23))
             username = entry.get("username", "")
@@ -91,10 +75,8 @@ class UIRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/api/topology":
             if TOPO_JSON.exists():
-                try:
-                    self.send_json(200, _load_topology_file())
-                except (json.JSONDecodeError, OSError, ValueError) as exc:
-                    self.send_json(500, {"error": f"invalid topology.json: {exc}"})
+                with TOPO_JSON.open("r", encoding="utf-8") as handle:
+                    self.send_json(200, json.load(handle))
             else:
                 self.send_json(404, {"error": "no topology loaded yet"})
             return
@@ -123,20 +105,14 @@ class UIRequestHandler(http.server.SimpleHTTPRequestHandler):
             body = self.rfile.read(length)
             try:
                 data = json.loads(body)
-                if not isinstance(data, dict):
-                    raise ValueError("topology payload must be a JSON object")
-                devices = data.get("devices", [])
-                links = data.get("links", [])
-                if not isinstance(devices, list) or not isinstance(links, list):
-                    raise ValueError("topology payload requires devices and links arrays")
-                _save_topology_file(data)
-                sync_summary = sync_topology_devices(devices)
+                devices = validate_topology_payload(data)
+                sync_summary = sync_topology_devices(devices, snapshot=(TOPO_JSON, data))
                 publish(
                     "topology_synced",
                     text=f"Topology synced: {sync_summary['count']} devices ready",
                     payload={
-                        "device_count": len(devices),
-                        "link_count": len(links),
+                        "device_count": len(data.get("devices", [])),
+                        "link_count": len(data.get("links", [])),
                         "registry_count": sync_summary["count"],
                         "created": sync_summary["created"],
                         "updated": sync_summary["updated"],
@@ -147,9 +123,11 @@ class UIRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(200, {"ok": True, "path": str(TOPO_JSON), "registry": sync_summary})
                 logger.info(
                     "topology.json saved (%s devices, %s links)",
-                    len(devices),
-                    len(links),
+                    len(data.get("devices", [])),
+                    len(data.get("links", [])),
                 )
+            except ValueError as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
             except Exception as exc:
                 self.send_json(500, {"ok": False, "error": str(exc)})
             return
@@ -158,19 +136,18 @@ class UIRequestHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 payload: dict[str, object] = {}
                 if TOPO_JSON.exists():
-                    try:
-                        payload = _load_topology_file() or {}
-                    except (json.JSONDecodeError, OSError, ValueError):
-                        payload = {}
+                    with TOPO_JSON.open("r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                    TOPO_JSON.unlink()
 
                 payload_devices = payload.get("devices", []) if isinstance(payload, dict) else []
                 topology_targets = collect_cleanup_device_names(payload_devices)
-                if TOPO_JSON.exists():
-                    TOPO_JSON.unlink()
-                cleanup_targets = sorted(topology_targets)
+                registry_targets = list(_device_registry.keys())
+                cleanup_targets = sorted({*topology_targets, *registry_targets})
                 disconnect_summary = disconnect_active_devices(cleanup_targets)
                 removed = remove_topology_devices(payload_devices)
-                removed_total = removed["count"]
+                registry_removed = clear_registered_devices()
+                removed_total = removed["count"] + registry_removed["count"]
                 publish(
                     "topology_cleared",
                     text=(
@@ -183,7 +160,7 @@ class UIRequestHandler(http.server.SimpleHTTPRequestHandler):
                     ),
                     payload={
                         "topology_cleanup": removed,
-                        "registry_cleanup": {"removed": [], "skipped": [], "count": 0},
+                        "registry_cleanup": registry_removed,
                         "count": removed_total,
                     },
                     extra={"status": "done"},
@@ -194,7 +171,7 @@ class UIRequestHandler(http.server.SimpleHTTPRequestHandler):
                         "ok": True,
                         "registry": {
                             "topology_cleanup": removed,
-                            "registry_cleanup": {"removed": [], "skipped": [], "count": 0},
+                            "registry_cleanup": registry_removed,
                             "count": removed_total,
                         },
                         "connections": disconnect_summary,

@@ -16,11 +16,8 @@ def load_current_topology() -> dict[str, object] | None:
     if not TOPOLOGY_JSON.exists():
         return None
 
-    try:
-        with TOPOLOGY_JSON.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (json.JSONDecodeError, OSError):
-        return None
+    with TOPOLOGY_JSON.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
 
     return payload if isinstance(payload, dict) else None
 
