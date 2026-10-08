@@ -38,20 +38,19 @@ uv run --locked python -m ensp_mcp_server.server
 
 服务通过 stdio 支持新协议 `2026-07-28`，以及旧版握手协议 `2024-11-05`、`2025-03-26`、`2025-06-18`、`2025-11-25`。客户端与服务端协商共同支持的协议版本。
 
-项目回归测试直接覆盖 `2026-07-28` 与 `2025-11-25` 的 stdio 调用；FastMCP 3.4.0 / MCP SDK 1.30.0 客户端连接当前服务也已验证。其他列出的旧协议属于底层 SDK 的支持范围，不等于每个客户端都已逐一验证。
+本地回归验证已覆盖 `2026-07-28` 与 `2025-11-25` 的 stdio 调用；FastMCP 3.4.0 / MCP SDK 1.30.0 客户端连接当前服务也已验证。测试脚本不随此仓库发布。其他列出的旧协议属于底层 SDK 的支持范围，不等于每个客户端都已逐一验证。
 
 这里的兼容性指通信协议。服务源码当前按 FastMCP 4.0.11 / MCP SDK 2.3.0 运行，未实现降级到 FastMCP 3.x / MCP SDK 1.x 的运行环境兼容。服务提供 20 个工具、2 个资源和 2 个提示词。
 
-### 开发检查
+### 依赖检查
 
 在项目根目录完成依赖同步后，可以执行：
 
 ```powershell
 uv pip check --python .venv/Scripts/python.exe
-uv run --locked python -m unittest discover -s tests -v
 ```
 
-验证覆盖工具与参数契约、工具异常、最新拓扑资源和提示词，以及新旧协议的真实 stdio 子进程调用。设备操作使用替身，不会向 eNSP 设备下发配置。
+该命令检查已安装依赖是否兼容，不验证设备功能。
 
 ## 配置 MCP 客户端
 
@@ -244,7 +243,6 @@ eNSP-MCP/
 ├── topo-viewer.css            # Web UI 样式
 ├── topo-viewer.js             # Web UI 逻辑
 ├── prompts.md                 # 客户端可直接粘贴的角色提示词
-├── tests/                     # 协议、工具、控制台和拓扑回归测试
 └── ensp_mcp_server/           # MCP Server 主包
     ├── __init__.py
     ├── server.py              # MCP Server 入口 & 工具注册

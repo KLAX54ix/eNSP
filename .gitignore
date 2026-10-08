@@ -24,3 +24,7 @@ pyvenv.cfg
 topo-test/
 README-old.md
 sync-source-to-ai.ps1
+
+# Keep local test scripts out of the public repository.
+/tests/
+/test/
