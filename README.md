@@ -1,16 +1,21 @@
 > **关于本仓库**
 >
-> 这是 [dawnight0x/ENSP-MCP](https://github.com/dawnight0x/ENSP-MCP) 的修复版
-> （它的上游是 [Redmig110/eNSP-AI](https://github.com/Redmig110/eNSP-AI)）。
+> 这是一个 **修复版**。三层关系：
+>
+> | 层 | 仓库 | 做了什么 |
+> |---|---|---|
+> | **原始项目** | [Redmig110/eNSP-AI](https://github.com/Redmig110/eNSP-AI) | 最早的实现（2026-03 起） |
+> | **二次开发** | [dawnight0x/ENSP-MCP](https://github.com/dawnight0x/ENSP-MCP) | 在其基础上重构 + 新增 Web 界面层 |
+> | **本仓库** | 你正在看的这个 | 在以上基础上修复了 6 个实测问题 |
 >
 > 在一次完整的 eNSP 结课实验实测中（13 台设备 / 17 条链路 / 210 条命令），
 > 挖出 7 个问题、修掉了 6 个，主要涉及：
-> **.topo 的 GBK 编码、<line> 的"一束线"语义、VRP 5.130 的保存确认框、
- 抢答确认框、ping -t 单位**。
+> **`.topo` 的 GBK 编码、`<line>` 的"一束线"语义、VRP 5.130 的保存确认框、
+> CRLF 抢答确认框、`ping -t` 单位**。
 >
-> - 逐条说明（现象 / 根因 / 修复）：[FIXES.md](FIXES.md)
-> - 完整问题清单（含另外两个同类项目）：[BUGS.md](BUGS.md)
-> - 只想打补丁：git apply fixes.patch
+> - 逐条说明（现象 / 根因 / 修复）：[`FIXES.md`](FIXES.md)
+> - 完整问题清单（含另外两个同类项目）：[`BUGS.md`](BUGS.md)
+> - 只想打补丁：`git apply fixes.patch`
 >
 > 下面开始是原项目文档。
 >
