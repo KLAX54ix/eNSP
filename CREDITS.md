@@ -98,37 +98,16 @@ Redmig110     3 个提交     （原始实现）
 
 ---
 
-## 五、同一血统下的另一个项目（推荐一看）
-
-除了本仓库，这条血统下还有另一个 fork，做的是**完全不同的事**，而且做得很扎实：
-
-### [sy-zn/ENSP-MCP](https://github.com/sy-zn/ENSP-MCP)
-
-| 它新增的能力 | 说明 |
-|---|---|
-| **拓扑创作** | `list_topology_models` + `create_ensp_topology` —— 按结构化的设备/链路方案，生成 eNSP 原生 `.topo`，可直接打开 |
-| **桌面控制桥** ⭐ | 一次人工批准的 UAC 启动仅监听 `127.0.0.1` 的提升权限桥；之后 `ensp_ui_action` 就能执行 `start_all` / `stop_all` / `save` / `fit` |
-| **Codex 插件** | `.codex-plugin/plugin.json` + 可移植的 `.mcp.json` |
-
-**其中"桌面控制桥"是这一圈项目里我们见到的唯一一个真正解决了
-"让 eNSP 自动启动全部设备"的方案** ——
-它用按窗口比例计算坐标的方式绕开了控件树不稳定，再用最小范围的提权绕过了 Windows 的 UIPI 限制。
-
-我们读过它的实现，认为值得推荐，因此列在这里。**相关能力请以它自己的仓库为准。**
-
----
-
-## 六、反馈去哪里
+## 五、反馈去哪里
 
 | 你的问题 | 提到哪里 |
 |---|---|
-| 上游功能本身的问题 | 对应的上游仓库 |
+| 上游功能本身的问题 | 对应的上游仓库（[Redmig110/eNSP-AI](https://github.com/Redmig110/eNSP-AI) / [dawnight0x/ENSP-MCP](https://github.com/dawnight0x/ENSP-MCP)） |
 | 这 6 个修复相关 | 本仓库，或上游 PR：https://github.com/dawnight0x/ENSP-MCP/pull/1 |
-| 拓扑创作 / 桌面控制桥 | [sy-zn/ENSP-MCP](https://github.com/sy-zn/ENSP-MCP) |
 
 ---
 
-## 七、本仓库自己做了什么
+## 六、本仓库自己做了什么
 
 不多，列清楚：
 
