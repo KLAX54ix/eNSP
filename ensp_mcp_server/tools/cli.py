@@ -128,7 +128,10 @@ def ping_from_device(
 ) -> str:
     """从设备发起 Ping 测试"""
     try:
-        command = f"ping -c {count} -t 2"
+        # VRP 的 ping -t 单位是【毫秒】，不是秒。
+        # 之前写死 -t 2 等于 2 毫秒超时，任何目标都会 100% 丢包 ——
+        # 会让 AI 误判"网络不通"。这里按 2 秒给。
+        command = f"ping -c {count} -t 2000"
         if source_ip:
             command += f" -a {source_ip}"
         command += f" {target_ip}"
