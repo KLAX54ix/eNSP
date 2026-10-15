@@ -1,4 +1,4 @@
-﻿const $ = (id) => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 
 const state = {
   topology: null,
@@ -578,12 +578,41 @@ async function persistTopology(payload) {
   return json;
 }
 
+// eNSP 保存的 .topo 实际是 GBK（CP936），但 XML 声明里写的是 encoding="UNICODE"。
+// 浏览器若按 UTF-8 解，中文会静默变成 U+FFFD 乱码；所以要按字节读，
+// 先严格试 UTF-8，失败再退回 GBK，这样一份中文 .topo 两种来源都能读。
+function decodeTopoBytes(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(bytes);
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(bytes);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (err) {
+    try {
+      return new TextDecoder("gbk").decode(bytes);
+    } catch (err2) {
+      return new TextDecoder("utf-8").decode(bytes);
+    }
+  }
+}
+
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onload = () => {
+      try {
+        const result = reader.result;
+        resolve(typeof result === "string" ? result : decodeTopoBytes(result));
+      } catch (err) {
+        reject(err);
+      }
+    };
     reader.onerror = () => reject(reader.error || new Error("文件读取失败"));
-    reader.readAsText(file, "utf-8");
+    reader.readAsArrayBuffer(file);
   });
 }
 
@@ -596,7 +625,12 @@ function parseTopo(xmlText) {
     };
   }
 
-  const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+  // eNSP 声明的 encoding="UNICODE" 不是合法编码名，解析前统一改掉
+  const normalized = xmlText.replace(
+    /^<\?xml[^?]*\?>/,
+    '<?xml version="1.0" encoding="utf-8" ?>'
+  );
+  const doc = new DOMParser().parseFromString(normalized, "text/xml");
   const parserError = doc.querySelector("parsererror");
   if (parserError) throw new Error("TOPO 解析失败，请确认文件格式是否正确");
 
@@ -615,9 +649,23 @@ function parseTopo(xmlText) {
   });
 
   doc.querySelectorAll("lines > line").forEach((node) => {
-    links.push({
-      srcId: node.getAttribute("srcDeviceID") || "",
-      dstId: node.getAttribute("destDeviceID") || "",
+    const srcId = node.getAttribute("srcDeviceID") || "";
+    const dstId = node.getAttribute("destDeviceID") || "";
+    // 一个 <line> 是"一束线"：里面的每个 <interfacePair> 都是一根独立的物理链路
+    // （链路聚合的 3 根线就装在一个 <line> 里）。全部取出，不能只算一条。
+    const pairs = node.querySelectorAll("interfacePair");
+    if (pairs.length === 0) {
+      links.push({ srcId, dstId });
+      return;
+    }
+    pairs.forEach((pair) => {
+      links.push({
+        srcId,
+        dstId,
+        lineName: pair.getAttribute("lineName") || "",
+        srcIndex: pair.getAttribute("srcIndex") || "",
+        tarIndex: pair.getAttribute("tarIndex") || "",
+      });
     });
   });
 

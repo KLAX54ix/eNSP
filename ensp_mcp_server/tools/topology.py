@@ -38,12 +38,28 @@ def _parse_topo_xml(file_path: str) -> ET.Element:
     elif len(raw) >= 4 and raw[1] == 0 and raw[3] == 0 and raw[0] in b"< \t\r\n":
         text = raw.decode("utf-16-le")
     else:
-        # For ASCII-compatible encodings, consult only the declaration. The
-        # legacy UNICODE label is not a codec; eNSP commonly uses UTF-8 here.
+        # For ASCII-compatible encodings, consult the declaration.
+        #
+        # The legacy UNICODE label is not a codec; eNSP 实际把它当成 GBK(CP936) 写盘。
+        # 所以不能假设 UTF-8：先按声明试，再"严格 UTF-8"，最后退回 GB18030，
+        # 这样一份中文 .topo 无论存的是 GBK 还是 UTF-8 都能正确读出来。
         header = _XML_DECL_RE.match((raw.partition(b"?>")[0] + b"?>").decode("ascii", errors="replace"))
         declared = _XML_DECL_ENCODING_RE.search(header.group()) if header else None
-        encoding = declared.group("encoding") if declared else "utf-8"
-        text = raw.decode("utf-8" if encoding.upper() == "UNICODE" else encoding)
+        encoding = declared.group("encoding") if declared else ""
+        candidates: list[str] = []
+        if encoding and encoding.upper() != "UNICODE":
+            candidates.append(encoding)
+        candidates.extend(["utf-8", "gb18030", "utf-16"])
+        text = None
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                text = raw.decode(candidate)
+                break
+            except (LookupError, UnicodeDecodeError) as exc:
+                last_error = exc
+        if text is None:
+            raise last_error if last_error is not None else ValueError("无法解码 .topo 文件")
     declaration = _XML_DECL_RE.match(text)
     if declaration:
         header = _XML_DECL_ENCODING_RE.sub("", declaration.group(), count=1)
@@ -102,8 +118,9 @@ def discover_topology(file_path: str) -> str:
     # 灵活查找链路节点（真实 .topo 用 lines/line）
     link_nodes = _find_elements(root, ["lines/line", "links/link", "link", "connection", "connections/connection"])
     for link in link_nodes:
-        info = _extract_link_info(link)
-        if info:
+        # 一个 <line> 是"一束线"：里面的每个 <interfacePair> 都是一根独立的物理链路
+        # （链路聚合的 3 根线就装在一个 <line> 里）。必须全部取出，不能只取第一条。
+        for info in _extract_link_infos(link):
             info["src_device"] = id_to_name.get(info["src_device"], info["src_device"])
             info["dst_device"] = id_to_name.get(info["dst_device"], info["dst_device"])
             links.append(info)
@@ -325,9 +342,14 @@ def _infer_device_type(model: str) -> str:
     return "unknown"
 
 
-def _extract_link_info(elem: ET.Element) -> dict | None:
-    """从 XML 元素提取链路信息（真实 eNSP .topo 用 srcDeviceID/destDeviceID）"""
-    # 尝试多种属性/子元素格式
+def _extract_link_infos(elem: ET.Element) -> list[dict]:
+    """从 ``<line>`` 元素提取链路信息，**每个 ``<interfacePair>`` 一条**。
+
+    eNSP 里一个 ``<line>`` 代表"一束线"：链路聚合的 N 根物理线会写成
+    N 个 ``<interfacePair>`` 子节点。只取第一个（``find``）会漏掉聚合链路的其余几根，
+    AI 就会误判成单链路，所以这里必须用 ``findall`` 逐条产出。
+    """
+    # 兼容多种属性/子元素写法
     src_device = (
         elem.get("srcDeviceID") or elem.get("srcDevice") or elem.get("src_device")
         or elem.findtext("srcDevice") or elem.findtext("source/device")
@@ -338,29 +360,37 @@ def _extract_link_info(elem: ET.Element) -> dict | None:
         or elem.findtext("dstDevice") or elem.findtext("destination/device")
         or ""
     )
-
-    # 真实 .topo 端口信息在 interfacePair 子节点里
-    src_port = ""
-    dst_port = ""
-    pair = elem.find("interfacePair")
-    if pair is not None:
-        src_port = pair.get("srcIndex", "")
-        dst_port = pair.get("tarIndex", pair.get("destIndex", ""))
-    src_port = src_port or (
-        elem.get("srcPort") or elem.get("src_port")
-        or elem.findtext("srcPort") or elem.findtext("source/port") or ""
-    )
-    dst_port = dst_port or (
-        elem.get("dstPort") or elem.get("dst_port")
-        or elem.findtext("dstPort") or elem.findtext("destination/port") or ""
-    )
-
     if not (src_device and dst_device):
-        return None
+        return []
 
-    return {
-        "src_device": src_device,
-        "src_port": src_port,
-        "dst_device": dst_device,
-        "dst_port": dst_port,
-    }
+    pairs = elem.findall("interfacePair")
+    if not pairs:
+        # 没有 interfacePair 子节点时退回属性/子元素写法，产出一条
+        return [{
+            "src_device": src_device,
+            "src_port": (
+                elem.get("srcPort") or elem.get("src_port")
+                or elem.findtext("srcPort") or elem.findtext("source/port") or ""
+            ),
+            "dst_device": dst_device,
+            "dst_port": (
+                elem.get("dstPort") or elem.get("dst_port")
+                or elem.findtext("dstPort") or elem.findtext("destination/port") or ""
+            ),
+        }]
+
+    infos = []
+    for pair in pairs:
+        infos.append({
+            "src_device": src_device,
+            "src_port": pair.get("srcIndex", ""),
+            "dst_device": dst_device,
+            "dst_port": pair.get("tarIndex", pair.get("destIndex", "")),
+        })
+    return infos
+
+
+def _extract_link_info(elem: ET.Element) -> dict | None:
+    """兼容旧调用：只返回第一条链路。新代码请用 :func:`_extract_link_infos`。"""
+    infos = _extract_link_infos(elem)
+    return infos[0] if infos else None

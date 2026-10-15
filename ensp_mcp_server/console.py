@@ -29,7 +29,18 @@ _ANSI_CSI_RE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 _ANSI_OSC_RE = re.compile(rb"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _IAC = 0xFF
 _CLI_ERROR_RE = re.compile(r"^\s*(?:Error\s*:|错误\s*[:：])", re.IGNORECASE | re.MULTILINE)
-_SAVE_CONFIRM_RE = re.compile(r"(?:\[\s*y\s*/\s*n\s*\]|\(\s*y\s*/\s*n\s*\))\s*[:：]?\s*$", re.IGNORECASE)
+_SAVE_CONFIRM_RE = re.compile(
+    # 兼容 VRP 的几种保存确认框：
+    #   [Y/N]          老机型，无默认值
+    #   (y/n)          有些版本不带默认值
+    #   (y/n)[n]       VRP 5.130 等新版本，[n] 是默认值（不回答就会取 n 即取消）
+    # 之前只认前两种、且要求 ) 后面直接是 : 或行尾，导致 (y/n)[n]: 匹配失败、
+    # 干脆不发送确认，save 静默失败。
+    r"(?:\[\s*y\s*/\s*n\s*\]|\(\s*y\s*/\s*n\s*\))"
+    r"(?:\s*\[\s*[ynYN]\s*\])?"
+    r"\s*[:：]?\s*$",
+    re.IGNORECASE,
+)
 _SAVE_FILENAME_RE = re.compile(
     r"(?:input|enter|输入)[^\r\n]*(?:file\s*name|filename|文件名)[^\r\n]*"
     r"\[[^\[\]\r\n]+\.(?:cfg|zip)\]\s*[:：]?\s*$", re.IGNORECASE
@@ -38,6 +49,8 @@ _SAVE_SUCCESS_RE = re.compile(
     r"^\s*(?:Info\s*:\s*)?(?:"
     r"Save\s+(?:the\s+)?(?:current\s+)?configuration\s+successfully[.!]?"
     r"|(?:The\s+)?(?:current\s+)?configuration\s+(?:was\s+|has\s+been\s+)?saved\s+(?:to\s+the\s+device\s+)?successfully[.!]?"
+    # VRP 5.130 的 AR 系列实际回显是这一句，之前不在这里，导致保存成功却报"未确认"
+    r"|Configuration\s+file\s+had\s+been\s+saved\s+successfully[.!]?"
     r"|Successfully\s+saved\s+(?:the\s+)?(?:current\s+)?configuration[.!]?"
     r"|配置(?:文件)?保存成功[。.!]?"
     r")\s*$", re.IGNORECASE | re.MULTILINE
@@ -315,7 +328,11 @@ class HuaweiConsole:
         if not self._sock:
             raise RuntimeError("Socket not connected")
         publish("command_send", device=self.device_label, text=text, payload={"command": text})
-        self._sock.sendall((text + "\r\n").encode("utf-8"))
+        # 只发 CR，不能发 CRLF。
+        # VRP 把 CR 当回车执行命令；多出来的那个 LF 会立刻被【紧接着弹出的确认框】
+        # 当成"直接回车"抢答，于是取默认值 —— 例如 save 的 (y/n)[n]: 会取 n 直接取消保存，
+        # 等我们再补发 "Y" 时设备早已回到提示符，保存静默失败。
+        self._sock.sendall((text + "\r").encode("utf-8"))
         sysname = _SYSNAME_RE.fullmatch(text.strip())
         if sysname is not None:
             self._pending_prompt = sysname.group(1)
