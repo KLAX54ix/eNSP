@@ -1,11 +1,11 @@
 > **关于本仓库**
 >
-> 这是一个 **修复版**。三层关系：
+> 这是一个 **修复版**，不是原创项目。三层来源：
 >
 > | 层 | 仓库 | 做了什么 |
 > |---|---|---|
-> | **原始项目** | [Redmig110/eNSP-AI](https://github.com/Redmig110/eNSP-AI) | 最早的实现（2026-03 起） |
-> | **二次开发** | [dawnight0x/ENSP-MCP](https://github.com/dawnight0x/ENSP-MCP) | 在其基础上重构 + 新增 Web 界面层 |
+> | **原始项目** | [Redmig110/eNSP-AI](https://github.com/Redmig110/eNSP-AI)（[@Redmig110](https://github.com/Redmig110)） | 最早的实现（2026-03 起） |
+> | **二次开发** | [dawnight0x/ENSP-MCP](https://github.com/dawnight0x/ENSP-MCP)（[@dawnight0x](https://github.com/dawnight0x)） | 在其基础上重构 + 新增 Web 界面层 |
 > | **本仓库** | 你正在看的这个 | 在以上基础上修复了 6 个实测问题 |
 >
 > 在一次完整的 eNSP 结课实验实测中（13 台设备 / 17 条链路 / 210 条命令），
@@ -15,7 +15,18 @@
 >
 > - 逐条说明（现象 / 根因 / 修复）：[`FIXES.md`](FIXES.md)
 > - 完整问题清单（含另外两个同类项目）：[`BUGS.md`](BUGS.md)
+> - **来源、署名与 License 说明**：[`CREDITS.md`](CREDITS.md) ← 请先看这个
 > - 只想打补丁：`git apply fixes.patch`
+>
+> ⚠️ **License 提示**：上游三个仓库**均未声明开源许可证**。
+> 本仓库**不单方面附加许可证**，也**不对上游代码主张著作权**。
+> 商业使用或再发布前，请先确认上游授权 —— 详见 [`CREDITS.md`](CREDITS.md#四license-状态请务必看清楚)。
+>
+> 💡 **同一血统下还有另一个项目值得一看**：
+> [sy-zn/ENSP-MCP](https://github.com/sy-zn/ENSP-MCP) ——
+> 它新增了**拓扑创作**（按方案生成原生 `.topo`）和**桌面控制桥**
+> （一次 UAC 授权后，可自动 `start_all` / `stop_all` / `save` / `fit`），
+> 是这一圈里唯一真正解决了"让 eNSP 自动开设备"的方案。
 >
 > 下面开始是原项目文档。
 >
