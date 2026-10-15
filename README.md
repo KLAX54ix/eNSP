@@ -1,3 +1,21 @@
+> **关于本仓库**
+>
+> 这是 [dawnight0x/ENSP-MCP](https://github.com/dawnight0x/ENSP-MCP) 的修复版
+> （它的上游是 [Redmig110/eNSP-AI](https://github.com/Redmig110/eNSP-AI)）。
+>
+> 在一次完整的 eNSP 结课实验实测中（13 台设备 / 17 条链路 / 210 条命令），
+> 挖出 7 个问题、修掉了 6 个，主要涉及：
+> **.topo 的 GBK 编码、<line> 的"一束线"语义、VRP 5.130 的保存确认框、
+ 抢答确认框、ping -t 单位**。
+>
+> - 逐条说明（现象 / 根因 / 修复）：[FIXES.md](FIXES.md)
+> - 完整问题清单（含另外两个同类项目）：[BUGS.md](BUGS.md)
+> - 只想打补丁：git apply fixes.patch
+>
+> 下面开始是原项目文档。
+>
+> ---
+
 # ENSP-MCP
 
 让 AI 通过 MCP 协议管理华为 eNSP 模拟网络设备，并提供拓扑可视化工具。
